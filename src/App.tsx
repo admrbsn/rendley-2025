@@ -1,4 +1,4 @@
-import { Engine, EventsEnum, Transition, type EngineOptions, type Clip } from '@rendley/sdk';
+import { Engine, EventsEnum, Transition } from '@rendley/sdk';
 import { useEffect, useRef, useState } from 'react';
 
 const VIDEOS = [
@@ -37,16 +37,6 @@ const App = () => {
   }, []);
 
   useEffect(() => {
-    console.log('State updated:', {
-      currentVideoIndex,
-      isPlaying,
-      clipsCount: clipsRef.current.length,
-      clipIds: clipsRef.current,
-      clipStartTimes: clipStartTimesRef.current
-    });
-  }, [currentVideoIndex, isPlaying]);
-
-  useEffect(() => {
     init();
     return () => {
       if (engineRef.current) {
@@ -75,53 +65,47 @@ const App = () => {
     const engine = Engine.getInstance();
     engineRef.current = engine;
 
-    console.log('Available events:', Object.values(EventsEnum));
-
     engine.events.on(EventsEnum.PLAYING, (payload) => {
-      console.log('PLAYING event:', payload);
       setPlaying(payload.isPlaying);
     });
 
     engine.events.on(EventsEnum.READY, () => {
-      console.log('READY event');
       setLoading(false);
     });
 
-    engine.events.on('clip_start', (payload) => {
-      console.log('CLIP_START event:', payload);
-      const clipIndex = clipsRef.current.indexOf(payload.clipId);
-      if (clipIndex !== -1) {
-        console.log('Setting current video index from CLIP_START:', clipIndex);
-        setCurrentVideoIndex(clipIndex);
+    // Using string event names directly instead of EventsEnum
+    engine.events.on('clipChange' as any, (payload: any) => {
+      if (payload && payload.clipId) {
+        const clipIndex = clipsRef.current.indexOf(payload.clipId);
+        if (clipIndex !== -1) {
+          setCurrentVideoIndex(clipIndex);
+        }
       }
     });
 
-    engine.events.on('progress', (payload) => {
-      console.log('PROGRESS event:', payload);
-      const currentTime = payload.currentTime;
-      
-      const currentIndex = clipStartTimesRef.current.findIndex((startTime, index) => {
-        const nextStartTime = clipStartTimesRef.current[index + 1] || Infinity;
-        return currentTime >= startTime && currentTime < nextStartTime;
-      });
+    engine.events.on('progress' as any, (payload: any) => {
+      if (payload && typeof payload.time === 'number') {
+        const currentTime = payload.time;
+        
+        const currentIndex = clipStartTimesRef.current.findIndex((startTime, index) => {
+          const nextStartTime = clipStartTimesRef.current[index + 1] || Infinity;
+          return currentTime >= startTime && currentTime < nextStartTime;
+        });
 
-      if (currentIndex !== -1 && currentIndex !== currentVideoIndex) {
-        console.log('Updating current video index to:', currentIndex);
-        setCurrentVideoIndex(currentIndex);
+        if (currentIndex !== -1 && currentIndex !== currentVideoIndex) {
+          setCurrentVideoIndex(currentIndex);
+        }
       }
     });
 
-    const options: EngineOptions = {
+    await engine.init({
       display: {
         width: 540,
         height: 960,
         backgroundColor: '#000000',
         view: canvasRef.current,
-      },
-      enableProgressTracking: true
-    };
-
-    await engine.init(options);
+      }
+    });
 
     const library = engine.getLibrary();
     const uploadedVideos = await Promise.all(
@@ -137,14 +121,13 @@ const App = () => {
       
       const clip = await layer.addClip({ mediaDataId });
       if (clip) {
+        const duration = await clip.getDuration();
         clipStartTimesRef.current.push(currentStartTime);
-        currentStartTime += clip.duration;
+        currentStartTime += duration;
       }
     }
 
     clipsRef.current = layer.clipsIds;
-    console.log('Initialized clips:', clipsRef.current);
-    console.log('Clip start times:', clipStartTimesRef.current);
 
     const timeline = engine.getTimeline();
     const display = engine.getDisplay();
@@ -155,28 +138,29 @@ const App = () => {
       const clip = timeline.getClipById(clipId);
       if (!clip) continue;
 
-      const mediaData = library.getMediaById(clip.mediaDataId);
+      const mediaId = await clip.getMediaId();
+      if (!mediaId) continue;
+      
+      const mediaData = library.getMediaById(mediaId);
       if (!mediaData) continue;
 
       const [displayWidth, displayHeight] = display.getResolution();
-      const maxTextWidth = displayWidth * 0.9;
       const textPositionTop = displayHeight * 0.8;
       const textPositionLeft = displayWidth / 2;
 
+      const duration = await clip.getDuration();
+      const startTime = await clip.getStartTime();
+
       await textLayer.addClip({
         type: 'text',
-        text: mediaData.filename,
-        duration: clip.duration,
-        startTime: clip.startTime,
+        text: mediaData.filename || `Video ${clipId}`,
+        duration,
+        startTime,
         style: {
-          textSize: 32,
-          color: '#FFFFFF',
-          weight: 'bold',
-          radius: [20, 20, 20, 20],
-          background: '#000000',
-          align: 'center',
-          width: maxTextWidth,
           position: [textPositionLeft, textPositionTop],
+          color: '#FFFFFF',
+          backgroundColor: '#000000',
+          cornerRadius: [20, 20, 20, 20],
         },
       });
     }
@@ -205,7 +189,6 @@ const App = () => {
   }
 
   function handleTogglePlay() {
-    console.log('handleTogglePlay called, current isPlaying:', isPlaying);
     if (isPlaying) {
       Engine.getInstance().pause();
       return;
@@ -214,16 +197,13 @@ const App = () => {
   }
 
   function handleThumbnailClick(index: number) {
-    console.log('handleThumbnailClick called with index:', index);
     if (!engineRef.current || !clipsRef.current[index]) {
-      console.log('Invalid engine or clip index');
       return;
     }
     
     const timeline = engineRef.current.getTimeline();
     const startTime = clipStartTimesRef.current[index];
     
-    console.log('Seeking to time:', startTime);
     timeline.seek(startTime);
     setCurrentVideoIndex(index);
     engineRef.current.play();
